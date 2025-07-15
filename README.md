@@ -1,6 +1,5 @@
 A web-based reading platform where administrators upload and manage books while readers browse, rate, and search the catalogue. Users can unlock online reading through a monthly subscription.
 ## Product Overview & Functional Requirements
-
 - **Roles**
     - Administrators sign in with email + password.
     - Users sign up with email + password or Google / Facebook OAuth.
@@ -18,10 +17,10 @@ A web-based reading platform where administrators upload and manage books while 
     - Both administrators and users receive email notifications for relevant events (e.g., account, content, and payment updates).
 
 ## Solution Design
-
-![[scribd-system-design.drawio.png]]
+![scribd-system-design.drawio.png](scribd-system-design.drawio.png)
 
 The platform follows a micro-services + event-driven design: each bounded-context runs in its own service, all domain changes are published to Amazon EventBridge, and stateless components scale behind container Auto-Scaling Groups or Lambda functions. Edge caching (CloudFront) and origin routing (ALB) keep latency low while letting services evolve independently.
+
 #### Client & Edge Layer
 - **Clients** – two personas, User and Admin.
 - **Route 53** – DNS for app.example.com.
