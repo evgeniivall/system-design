@@ -18,7 +18,7 @@ A web-based reading platform where administrators upload and manage books while 
     - Both administrators and users receive email notifications for relevant events (e.g., account, content, and payment updates).
 
 ## Solution Design
-![book-reader/book-reader-system-design-arch.drawio.png](book-reader/book-reader-system-design-arch.drawio.png)
+![book-reader-system-design-arch.drawio.png](book-reader-system-design-arch.drawio.png)
 
 The platform follows a micro-services + event-driven design: each bounded-context runs in its own service, all domain changes are published to Amazon EventBridge, and stateless components scale behind container Auto-Scaling Groups or Lambda functions. Edge caching (CloudFront) and origin routing (ALB) keep latency low while letting services evolve independently.
 
@@ -67,7 +67,7 @@ A **Payment Lambda** handles both front-end checkout creation and Stripe webhook
 
 ## User Flows
 ### User registration
-![book-reader/book-reader-system-design-sign-up.drawio.png](book-reader/book-reader-system-design-sign-up.drawio.png)
+![book-reader-system-design-sign-up.drawio.png](book-reader-system-design-sign-up.drawio.png)
 ### Administrator adds a new book
 
 ### User reads a book chapter
