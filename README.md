@@ -5,6 +5,6 @@ Each sub-directory contains a self-contained system with its own artefacts (arch
 
 | System | Description | Docs |
 |--------|-------------|------|
-| URL Shortener | Converts long URLs into compact, trackable aliases with quotas, rate-limits and admin controls. | [`url-shortener/README.md`](url-shortener/README.md) |
-| Book Reader| A web platform where admins upload books and readers browse, search, rate, and read them via a single monthly subscription. | [`book-reader/README.md`](book-reader/README.md) |
+| URL Shortener | Converts long URLs into compact, trackable aliases with quotas, rate-limits and admin controls. | [`Link`](url-shortener/README.md) |
+| Book Reader| A web platform where admins upload books and readers browse, search, rate, and read them via a single monthly subscription. | [`Link`](book-reader/README.md) |
 
