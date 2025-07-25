@@ -24,7 +24,7 @@ The platform follows a micro-services + event-driven design: each bounded-contex
 
 #### Client & Edge Layer
 - **Clients** – two personas, User and Admin.
-- **Route 53** – DNS for app.example.com.
+- **Route 53** – DNS for app.bookreader.com.
 - **CloudFront CDN** – caches HTML chapters, images and API GETs; Improves global latency and shields origins from spikes.
 - **Application Load Balancer** – provides TLS off-loading, host/path routing, and JWT validation via the built-in authenticate-cognito action.
 
@@ -67,7 +67,37 @@ A **Payment Lambda** handles both front-end checkout creation and Stripe webhook
 
 ## User Flows
 ### User registration
+The sign-up flow relies on Amazon Cognito’s Hosted UI for all user-facing auth, while three lightweight AWS Lambdas (Post-Sign-Up, Post-Confirmation, Pre-Token-Generation) integrate Cognito with our own User-service and Redis cache. This keeps passwords and e-mail verification fully managed by AWS, yet injects subscription status into every JWT without adding latency to the core APIs.
 ![book-reader-system-design-sign-up.drawio.png](book-reader-system-design-sign-up.drawio.png)
+1. **User opens the sign-up page**
+   Their browser loads Cognito’s Hosted-UI (`GET /signup` over HTTPS) and receives the HTML form.
+2. **User submits the registration form**
+   The browser posts back to Cognito (`POST /signup`).
+   Cognito creates an **UNCONFIRMED** user record, then **invokes the Post-Sign-Up Lambda synchronously**.
+3. **Post-Sign-Up Lambda seeds your profile store**
+   It calls `POST /internal/users` on the User-service (REST, HTTPS).
+   The User-service inserts a “pending” row in **RDS Users** and returns `201 Created`.
+   Lambda’s 200-JSON response signals Cognito everything succeeded.
+4. **Cognito sends the verification e-mail**
+   Using SES under the hood, Cognito dispatches the confirmation message, then returns `200 OK` to the browser.
+5. **User clicks the link in the e-mail**
+   The browser hits `GET /confirm?code=...` on Cognito.
+   Cognito marks the account **CONFIRMED** and synchronously calls the **Post-Confirmation Lambda**.
+6. **Post-Confirmation Lambda activates the profile**
+   It patches the same user row via `PATCH /internal/users/{id}`; the User-service updates status to *active* in RDS and returns `200 OK`.
+   Lambda responds 200-JSON to Cognito.
+7. **Cognito redirects the browser back to your app**
+   A 302 Location header points at `https://app.bookreader.com/callback?code=AUTH_CODE&state=…`.
+8. **Browser exchanges the auth-code for tokens**
+   `POST /oauth2/token` to Cognito (HTTPS).
+   During token issuance Cognito invokes the **Pre-Token-Generation Lambda**.
+9. **Pre-Token Lambda fetches the subscription tier**
+   It issues `GET subscription:{userId}` to **MemoryDB Redis** (TCP 6379).
+   Because the new user hasn’t paid yet, Redis returns *nil*; the Lambda injects no tier claim and returns 200.
+10. **Cognito hands tokens to the browser**
+    `200 OK` with `id_token`, `access_token`, `refresh_token`.
+    The user is now logged in; subsequent API calls carry the access token and pass through the ALB’s JWT validation.
+
 ### Administrator adds a new book
 
 ### User reads a book chapter
