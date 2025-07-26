@@ -97,5 +97,19 @@ The sign-up flow relies on Amazon Cognito’s Hosted UI for all user-facing auth
     The user is now logged in; subsequent API calls carry the access token and pass through the ALB’s JWT validation.
 
 ### Administrator adds a new book
-
+The upload flow creates a new book record in the main database, streams the source file to S3 via a pre-signed URL, and triggers asynchronous search indexing.
+![book-reader-system-design-add-book.drawio.png](book-reader-system-design-add-book.drawio.png)
+1. **Admin requests an upload URL**
+   The browser calls `POST /books/presign` on Book-service (HTTPS).
+   Book-service inserts a stub row in RDS Books with status `uploading`, generates a pre-signed S3 PUT URL, and returns **200 OK** containing `{ bookId, uploadUrl }`.
+2. **Admin uploads the file to S3**
+   The browser uploads the book file with a `PUT` request to the pre-signed S3 URL.
+   Amazon S3 stores the object and replies **200 OK**.
+3. **Admin finalises metadata**
+   The browser sends `POST /books/{bookId}` with title, author, genre, and other details to Book-service.
+   Book-service updates the existing row in RDS Books to status `active`, writes full metadata, then emits a `BookCreated` event to EventBridge.
+   After both the database update and the `PutEvents` call succeed, Book-service responds **201 Created** to the browser.
+4. **Indexing happens asynchronously**
+   EventBridge delivers the `BookCreated` event to the Search-indexer Lambda.
+   The Lambda fetches the book’s metadata from RDS Books, writes a new document into OpenSearch, and exits.
 ### User reads a book chapter
