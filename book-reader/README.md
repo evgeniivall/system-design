@@ -97,6 +97,30 @@ The sign-up flow relies on Amazon Cognito’s Hosted UI for all user-facing auth
     - `200 OK` with `id_token`, `access_token`, `refresh_token`.
     - The user is now logged in; subsequent API calls carry the access token and pass through the ALB’s JWT validation.
 
+### Subscription Purchase & Payment Flow
+The payment flow uses Stripe Checkout for secure payment handling, with a Lambda creating the session and handling webhooks. After a successful payment, a SubscriptionUpdated event is emitted to EventBridge, triggering both the User-service to update state and Redis, and the Notification system via SQS to send a confirmation email.
+![book-reader-system-design-payment.drawio.png](book-reader-system-design-payment.drawio.png)
+1. **User starts the checkout flow**
+   - The browser calls `POST /payments/create-session` on the Payment Handler Lambda.
+   - The Lambda sends a `POST /v1/checkout/sessions` request to the Stripe API with pricing, metadata, and redirect URLs.
+   - Stripe responds with a checkout session ID and URL.
+   - The Lambda returns a `200 OK` with the `checkoutUrl` to the browser.
+2. **User completes the payment on Stripe**
+   - The browser navigates to the hosted Stripe Checkout page via the `checkoutUrl`.
+   - After successful payment, Stripe redirects the user to the configured `success_url` (302).
+   - This interaction happens entirely between the browser and Stripe's hosted UI.
+3. **Stripe triggers the webhook**
+   - Stripe sends a `POST /payments/webhook` to the Payment Handler Lambda with a `checkout.session.completed` event.
+   - The Lambda verifies the signature and publishes a `SubscriptionUpdated` event to EventBridge.
+   - It responds to Stripe with `200 OK` to acknowledge the webhook.
+4. **user-service updates internal state**
+   - EventBridge routes the `SubscriptionUpdated` event to the user-service via `POST /events/subscription-updated`.
+   - The user-service updates the user’s subscription in the primary database and writes the subscription tier to Redis.
+   - After successful updates, it returns `200 OK`.
+5. **Email notification is queued**
+   - EventBridge also forwards the same `SubscriptionUpdated` event to an SQS queue (`email-jobs`).
+   - The message is durably stored and acknowledged with a `202 Accepted`, enabling asynchronous processing by a notification worker.
+
 ### Administrator adds a new book
 The upload flow creates a new book record in the main database, streams the source file to S3 via a pre-signed URL, and triggers asynchronous search indexing.
 ![book-reader-system-design-add-book.drawio.png](book-reader-system-design-add-book.drawio.png)
