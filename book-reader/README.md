@@ -69,48 +69,48 @@ A **payment-handler Lambda** handles both front-end checkout creation and Stripe
 The sign-up flow relies on Amazon Cognito’s Hosted UI for all user-facing auth, while three lightweight AWS Lambdas (Post-Sign-Up, Post-Confirmation, Pre-Token-Generation) integrate Cognito with our own User-service and Redis cache. This keeps passwords and e-mail verification fully managed by AWS, yet injects subscription status into every JWT without adding latency to the core APIs.
 ![book-reader-system-design-sign-up.drawio.png](book-reader-system-design-sign-up.drawio.png)
 1. **User opens the sign-up page**
-   Their browser loads Cognito’s Hosted-UI (`GET /signup` over HTTPS) and receives the HTML form.
+   - Their browser loads Cognito’s Hosted-UI (`GET /signup` over HTTPS) and receives the HTML form.
 2. **User submits the registration form**
-   The browser posts back to Cognito (`POST /signup`).
-   Cognito creates an **UNCONFIRMED** user record, then **invokes the post-sign-up Lambda synchronously**.
+   - The browser posts back to Cognito (`POST /signup`).
+   - Cognito creates an **UNCONFIRMED** user record, then **invokes the post-sign-up Lambda synchronously**.
 3. **post-sign-up Lambda seeds your profile store**
-   It calls `POST /internal/users` on the user-service (REST, HTTPS).
-   The user-service inserts a “pending” row in **RDS Users** and returns `201 Created`.
-   Lambda’s 200-JSON response signals Cognito everything succeeded.
+   - It calls `POST /internal/users` on the user-service (REST, HTTPS).
+   - The user-service inserts a “pending” row in **RDS Users** and returns `201 Created`.
+   - Lambda’s 200-JSON response signals Cognito everything succeeded.
 4. **Cognito sends the verification e-mail**
-   Using SES under the hood, Cognito dispatches the confirmation message, then returns `200 OK` to the browser.
+   - Using SES under the hood, Cognito dispatches the confirmation message, then returns `200 OK` to the browser.
 5. **User clicks the link in the e-mail**
-   The browser hits `GET /confirm?code=...` on Cognito.
-   Cognito marks the account **CONFIRMED** and synchronously calls the **post-confirmation Lambda**.
+   - The browser hits `GET /confirm?code=...` on Cognito.
+   - Cognito marks the account **CONFIRMED** and synchronously calls the **post-confirmation Lambda**.
 6. **Post-Confirmation Lambda activates the profile**
-   It patches the same user row via `PATCH /internal/users/{id}`; the user-service updates status to *active* in RDS and returns `200 OK`.
-   Lambda responds 200-JSON to Cognito.
+   - It patches the same user row via `PATCH /internal/users/{id}`; the user-service updates status to *active* in RDS and returns `200 OK`.
+   - Lambda responds 200-JSON to Cognito.
 7. **Cognito redirects the browser back to your app**
-   A 302 Location header points at `https://app.bookreader.com/callback?code=AUTH_CODE&state=…`.
+   - A 302 Location header points at `https://app.bookreader.com/callback?code=AUTH_CODE&state=…`.
 8. **Browser exchanges the auth-code for tokens**
-   `POST /oauth2/token` to Cognito (HTTPS).
-   During token issuance Cognito invokes the **pre-token-generation Lambda**.
+   - `POST /oauth2/token` to Cognito (HTTPS).
+   - During token issuance Cognito invokes the **pre-token-generation Lambda**.
 9. **pre-token-generation Lambda fetches the subscription tier**
-   It issues `GET subscription:{userId}` to **MemoryDB Redis** (TCP 6379).
-   Because the new user hasn’t paid yet, Redis returns *nil*; the Lambda injects no tier claim and returns 200.
+   - It issues `GET subscription:{userId}` to **MemoryDB Redis** (TCP 6379).
+   - Because the new user hasn’t paid yet, Redis returns *nil*; the Lambda injects no tier claim and returns 200.
 10. **Cognito hands tokens to the browser**
-    `200 OK` with `id_token`, `access_token`, `refresh_token`.
-    The user is now logged in; subsequent API calls carry the access token and pass through the ALB’s JWT validation.
+    - `200 OK` with `id_token`, `access_token`, `refresh_token`.
+    - The user is now logged in; subsequent API calls carry the access token and pass through the ALB’s JWT validation.
 
 ### Administrator adds a new book
 The upload flow creates a new book record in the main database, streams the source file to S3 via a pre-signed URL, and triggers asynchronous search indexing.
 ![book-reader-system-design-add-book.drawio.png](book-reader-system-design-add-book.drawio.png)
 1. **Admin requests an upload URL**
-   The browser calls `POST /books/presign` on book-service (HTTPS).
-   book-service inserts a stub row in RDS Books with status `uploading`, generates a pre-signed S3 PUT URL, and returns **200 OK** containing `{ bookId, uploadUrl }`.
-2. **Admin uploads the file to S3**
-   The browser uploads the book file with a `PUT` request to the pre-signed S3 URL.
-   Amazon S3 stores the object and replies **200 OK**.
-3. **Admin finalises metadata**
-   The browser sends `POST /books/{bookId}` with title, author, genre, and other details to book-service.
-   book-service updates the existing row in RDS Books to status `active`, writes full metadata, then emits a `BookCreated` event to EventBridge.
-   After both the database update and the `PutEvents` call succeed, book-service responds **201 Created** to the browser.
-4. **Indexing happens asynchronously**
-   EventBridge delivers the `BookCreated` event to the search-indexer Lambda.
-   The Lambda fetches the book’s metadata from RDS Books, writes a new document into OpenSearch, and exits.
+   - The browser calls `POST /books/presign` on book-service (HTTPS).
+   - book-service inserts a stub row in RDS Books with status `uploading`, generates a pre-signed S3 PUT URL, and returns **200 OK** containing `{ bookId, uploadUrl }`.
+3. **Admin uploads the file to S3**
+   - The browser uploads the book file with a `PUT` request to the pre-signed S3 URL.
+   - Amazon S3 stores the object and replies **200 OK**.
+4. **Admin finalises metadata**
+   - The browser sends `POST /books/{bookId}` with title, author, genre, and other details to book-service.
+   - book-service updates the existing row in RDS Books to status `active`, writes full metadata, then emits a `BookCreated` event to EventBridge.
+   - After both the database update and the `PutEvents` call succeed, book-service responds **201 Created** to the browser.
+5. **Indexing happens asynchronously**
+   - EventBridge delivers the `BookCreated` event to the search-indexer Lambda.
+   - The Lambda fetches the book’s metadata from RDS Books, writes a new document into OpenSearch, and exits.
 ### User reads a book chapter
