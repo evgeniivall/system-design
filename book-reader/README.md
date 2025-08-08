@@ -138,3 +138,64 @@ The upload flow creates a new book record in the main database, streams the sour
    - EventBridge delivers the `BookCreated` event to the search-indexer Lambda.
    - The Lambda fetches the book’s metadata from RDS Books, writes a new document into OpenSearch, and exits.
 ### User reads a book chapter
+When a reader asks for a chapter, the read-service checks their subscription and either redirects them to the pre-rendered HTML in CloudFront or schedules a render job if the content isn’t ready. A worker then converts the source to HTML, stores it in S3 and future requests for that chapter are served instantly via the CDN.
+
+#### Sequence Version 1
+![book-reader-system-design-read-book-old.drawio.png](book-reader-system-design-read-book-old.drawio.png)
+1. **Reader asks for book metadata**
+   - Browser calls `GET /books/{bookId}` on **book-service** (HTTPS).
+   - Service returns **200 OK** with the book’s metadata JSON.
+2. **Reader requests a chapter**
+   - Browser calls `GET /books/{bookId}/chapters/{n}` on **book-read-service**.
+   - Service validates the user’s subscription in Redis and issues **HEAD** (or `GET`) to S3 for `rendered/{bookId}/chapter-{n}.html`.
+3. **Chapter not yet rendered**
+   - S3 returns **404 Not Found**.
+   - book-read-service enqueues a message on **render-jobs** SQS, then responds **202 Accepted** to the browser.
+4. **Render job runs asynchronously**
+   - **book-render-worker** Lambda consumes the SQS message, converts the source chapter to HTML, and `PUT`s the file to S3 (**200 OK**).
+5. **Browser polls until content is ready**
+   - Browser repeats `GET /books/{bookId}/chapters/{n}` every few seconds.
+   - Once S3 holds the object, book-read-service returns **302 Redirect** (or **200 OK + HTML**) pointing the browser to the rendered chapter, which then loads instantly from S3/CloudFront.
+##### Issues:
+- **GET is not idempotent** – the same request yields `202 Accepted` until the chapter is rendered, and later returns `200 OK`, breaking the normal expectation that a GET call is side-effect-free and stable.
+- **No deduplication of render jobs** – two (or two hundred) readers requesting an unseen chapter at the same moment each enqueue a separate job, wasting Lambda time and potentially overrunning write or concurrency limits.
+- **High QPS on `book-read-service` and Redis just to discover “not ready yet”** – tight client polling drives many extra round-trips and cache look-ups that carry both cost and scaling pain.
+- **Each cache miss triggers a billable `GET` 404 to S3** – every “is the file there yet?” check that fails incurs an S3 request charge, multiplying costs under heavy traffic or probing.
+
+#### Sequence Version 2
+##### Diagram 1: Client discovery + render trigger
+![book-reader-system-design-read-book-1.drawio.png](book-reader-system-design-read-book-1.drawio.png)
+1. **Get book & first‐time chapter request**
+   - Browser fetches book metadata from **`book-service`** (`GET /books/{id}` → 200).
+   - Browser tries to read a chapter (`GET /books/{bookId}/chapters/{n}`).
+2. **Availability check**
+   - **`book-read-service`**
+     1. Confirms the reader’s subscription in **Redis** (`subscriptions-cache`).
+     2. Issues a **HEAD** to S3 for `rendered/{bookId}/chapter-{n}.html`.
+   - If S3 returns **404**, `book-read-service` answers the browser with **404 Not Found**.
+3. **Explicit render request**
+   - Browser sends **`POST /books/{id}/chapters/{n}/render`**.
+   - Service validates access, creates or re-uses a render job, and replies **202 Accepted** with a `jobId`.
+4. **Job-status polling**
+   - Browser periodically calls `GET /render-jobs/{jobId}` until the payload reports `status:"done"`.
+5. **Final content fetch**
+   - Browser retries `GET /books/{bookId}/chapters/{n}`.
+   - This time the S3 **HEAD** is **200**; service returns **302 Redirect** to a signed CloudFront URL, letting the browser load the rendered HTML directly from the CDN.
+##### Diagram 2: Server-side job creation, deduplication & rendering
+![book-reader-system-design-read-book-2.drawio.png](book-reader-system-design-read-book-2.drawio.png)
+1. **Render job submission**
+   - Browser issues **`POST /books/{id}/chapters/{n}/render`** to **`book-read-service`**.
+   - Service performs a **SELECT** in **`books DB`** for an existing job on the same `(bookId, chapter)`.
+     - **0 rows** → `INSERT` new job row (`status=queued`).
+     - **>0 rows** → re-use the existing job record.
+   - Responds **202 Accepted** with the `jobId`.
+2. **Queueing**
+   - After the `INSERT`, the service pushes a message onto **`render-jobs` SQS**; ACK = 200.
+3. **Rendering worker**
+   - Lambda **`book-render-worker`** receives the SQS message, renders the chapter to HTML, and **PUTs** the file to S3.
+   - It then **UPDATEs** the corresponding job row to `status=done` (or error).
+4. **Progress polling**
+   - Browser polls `GET /render-jobs/{jobId}`.
+   - `book-read-service` does a single-row **SELECT** from **`books DB`** and returns `{status:"queued" | "in-progress" | "done"}`.
+5. **Completion**
+   - When status becomes **done**, the browser exits the loop and proceeds to fetch the chapter through the flow shown in Diagram 1 (resulting in a 302 redirect to the freshly rendered content on S3/CloudFront).
